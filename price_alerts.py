@@ -1,45 +1,47 @@
 import json
 import os
 import sys
+import time
 from decimal import Decimal
-from urllib.request import urlopen
 from urllib.parse import urlencode
+from urllib.request import urlopen
 
 os.environ["TELEGRAM_STATE_DIR"] = "/var/lib/crypto-news"
 import telegram_delivery as tg
 
-LEVELS = {"ETHUSDT": [2200, 2150, 2100, 2050, 1950, 1900, 1850], "BTCUSDT": [75000, 70000]}
+SYMBOLS = [("BTCUSDT", "BTC"), ("ETHUSDT", "ETH")]
+PERIOD = 1800  # 30 минут
+
+
+def price(symbol):
+    url = "https://api.binance.com/api/v3/ticker/price?" + urlencode({"symbol": symbol})
+    with urlopen(url, timeout=20) as response:
+        value = Decimal(json.load(response)["price"])
+    if not value.is_finite() or value <= 0:
+        raise ValueError("Invalid Binance price")
+    return value
+
+
+def fmt(value):
+    return f"{value:,.2f}".replace(",", " ")
+
 
 def main():
     check = "--check" in sys.argv
-    ledger = tg.read("delivery.json", {})
-    for symbol, levels in LEVELS.items():
-        remaining = [
-            level for level in levels
-            if True
-        ]
-        if not remaining and not check:
-            continue
-        query = urlencode({"symbol": symbol})
-        url = "https://api.binance.com/api/v3/ticker/price?" + query
-        with urlopen(url, timeout=20) as response:
-            data = json.load(response)
-        price = Decimal(data["price"])
-        if not price.is_finite() or price <= 0:
-            raise ValueError("Invalid Binance price")
-        print(symbol, price, "USDT", flush=True)
-        for level in remaining:
-            if price > level or check:
-                continue
-            key = f"price:{symbol}:{level}:{int(__import__('time').time()//1800)}"
-            text = (
-                f"Binance: {symbol} — {price} USDT\n"
-                f"Цена достигла порога {level} USDT или ниже."
-            )
-            result = tg.send_digest({"text": text, "event_keys": [key]})
-            if not result.get("sent"):
-                raise RuntimeError("Delivery not confirmed")
-            print("SENT", symbol, level, flush=True)
+    lines = [f"{name}: {fmt(price(symbol))} USDT" for symbol, name in SYMBOLS]
+    text = "Binance, цены сейчас\n" + "\n".join(lines)
+    print(text, flush=True)
+    if check:
+        return
+    key = f"prices:{int(time.time() // PERIOD)}"
+    if key in tg.read("delivery.json", {}):
+        print("SKIP: уже отправлено в этом получасе", flush=True)
+        return
+    result = tg.send_digest({"text": text, "event_keys": [key]})
+    if not result.get("sent"):
+        raise RuntimeError("Delivery not confirmed")
+    print("SENT", flush=True)
+
 
 if __name__ == "__main__":
     try:
